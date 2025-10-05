@@ -1,0 +1,242 @@
+local player = game.Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local uis = game:GetService("UserInputService")
+local runService = game:GetService("RunService")
+local camera = workspace.CurrentCamera
+
+local WALK_NORMAL, WALK_BOOST = 16, 60
+local JUMP_NORMAL, JUMP_BOOST = 50, 120
+local isBoosted, isFlying, locked, target, indicator = false, false, false, nil, nil
+local flySpeed = 50
+local flyConn
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local function rainbowStroke(parent, thickness)
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = thickness or 3
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Outside
+    stroke.Parent = parent
+
+    local gradient = Instance.new("UIGradient")
+    gradient.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(255,0,0)),
+        ColorSequenceKeypoint.new(0.16, Color3.fromRGB(255,127,0)),
+        ColorSequenceKeypoint.new(0.33, Color3.fromRGB(255,255,0)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0,255,0)),
+        ColorSequenceKeypoint.new(0.66, Color3.fromRGB(0,0,255)),
+        ColorSequenceKeypoint.new(0.83, Color3.fromRGB(75,0,130)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(148,0,211))
+    }
+    gradient.Rotation = 0
+    gradient.Parent = stroke
+
+    task.spawn(function()
+        while task.wait(0.03) do
+            gradient.Rotation = (gradient.Rotation + 2) % 360
+        end
+    end)
+end
+
+local function createButton(name, text, pos)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Size = UDim2.new(0, 120, 0, 40)
+    button.Position = pos
+    button.Text = text
+    button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.Font = Enum.Font.SourceSansBold
+    button.TextSize = 20
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = button
+    rainbowStroke(button, 2.5)
+    button.Parent = screenGui
+
+    button.MouseButton1Down:Connect(function()
+        button.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    end)
+    button.MouseButton1Up:Connect(function()
+        button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    end)
+
+    return button
+end
+
+local menuBtn = createButton("Menu", "≡ Menu", UDim2.new(0.05, 0, 0.7, 0))
+
+local menuFrame = Instance.new("Frame")
+menuFrame.Size = UDim2.new(0, 130, 0, 0)
+menuFrame.Position = UDim2.new(0, 0, 1, 0)
+menuFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+menuFrame.ClipsDescendants = true
+menuFrame.Parent = menuBtn
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 10)
+corner.Parent = menuFrame
+rainbowStroke(menuFrame, 3)
+
+local function makeDraggable(ui)
+    local dragging, dragInput, dragStart, startPos
+    local function update(input)
+        local delta = input.Position - dragStart
+        ui.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+    ui.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = ui.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    ui.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    uis.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then update(input) end
+    end)
+end
+makeDraggable(menuBtn)
+
+local boostBtn = createButton("Boost", "Boost OFF", UDim2.new(0,5,0,5))
+boostBtn.Parent = menuFrame
+local flyBtn = createButton("Fly", "Fly OFF", UDim2.new(0,5,0,50))
+flyBtn.Parent = menuFrame
+local lockBtn = createButton("Lock", "Lock OFF", UDim2.new(0,5,0,95))
+lockBtn.Parent = menuFrame
+
+local menuOpen = false
+menuBtn.MouseButton1Click:Connect(function()
+    if menuOpen then
+        menuOpen = false
+        menuFrame:TweenSize(UDim2.new(0,130,0,0),"Out","Quad",0.3,true)
+    else
+        menuOpen = true
+        menuFrame:TweenSize(UDim2.new(0,130,0,140),"Out","Quad",0.3,true)
+    end
+end)
+
+local function applyBoost(state)
+    if state then
+        humanoid.WalkSpeed = WALK_BOOST
+        humanoid.JumpPower = JUMP_BOOST
+        boostBtn.Text = "Boost ON"
+    else
+        humanoid.WalkSpeed = WALK_NORMAL
+        humanoid.JumpPower = JUMP_NORMAL
+        boostBtn.Text = "Boost OFF"
+    end
+end
+boostBtn.MouseButton1Click:Connect(function()
+    isBoosted = not isBoosted
+    applyBoost(isBoosted)
+end)
+player.CharacterAdded:Connect(function(char)
+    character = char
+    humanoid = char:WaitForChild("Humanoid")
+    isBoosted = false
+    applyBoost(false)
+end)
+
+local function startFly()
+    local root = character:WaitForChild("HumanoidRootPart")
+    flyConn = runService.RenderStepped:Connect(function()
+        local move = Vector3.zero
+        if uis:IsKeyDown(Enum.KeyCode.W) then move += camera.CFrame.LookVector end
+        if uis:IsKeyDown(Enum.KeyCode.S) then move -= camera.CFrame.LookVector end
+        if uis:IsKeyDown(Enum.KeyCode.A) then move -= camera.CFrame.RightVector end
+        if uis:IsKeyDown(Enum.KeyCode.D) then move += camera.CFrame.RightVector end
+        if uis:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.new(0,1,0) end
+        if uis:IsKeyDown(Enum.KeyCode.LeftShift) then move -= Vector3.new(0,1,0) end
+        if move.Magnitude > 0 then
+            root.Velocity = move.Unit * flySpeed
+        else
+            root.Velocity = Vector3.zero
+        end
+    end)
+end
+local function stopFly()
+    if flyConn then flyConn:Disconnect() flyConn=nil end
+    character:WaitForChild("HumanoidRootPart").Velocity = Vector3.zero
+end
+flyBtn.MouseButton1Click:Connect(function()
+    isFlying = not isFlying
+    if isFlying then
+        startFly()
+        flyBtn.Text = "Fly ON"
+    else
+        stopFly()
+        flyBtn.Text = "Fly OFF"
+    end
+end)
+
+local function createIndicator(targetPart)
+    local billboard = Instance.new("BillboardGui")
+    billboard.Size = UDim2.new(0,100,0,30)
+    billboard.Adornee = targetPart
+    billboard.AlwaysOnTop = true
+    billboard.StudsOffset = Vector3.new(0,3,0)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1,0,1,0)
+    label.BackgroundTransparency = 1
+    label.Text = "🎯"
+    label.TextColor3 = Color3.fromRGB(255,0,0)
+    label.TextScaled = true
+    label.Font = Enum.Font.SourceSansBold
+    label.Parent = billboard
+    billboard.Parent = targetPart
+    return billboard
+end
+local function removeIndicator()
+    if indicator then indicator:Destroy() indicator=nil end
+end
+local function getTargetFromTouch(pos)
+    local unitRay = camera:ViewportPointToRay(pos.X, pos.Y)
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {player.Character}
+    params.FilterType = Enum.RaycastFilterType.Blacklist
+    local result = workspace:Raycast(unitRay.Origin, unitRay.Direction*1000, params)
+    if result and result.Instance and result.Instance.Parent:FindFirstChild("Humanoid") then
+        return result.Instance.Parent
+    end
+    return nil
+end
+lockBtn.MouseButton1Click:Connect(function()
+    if locked then
+        locked=false target=nil removeIndicator()
+        lockBtn.Text="Lock OFF"
+    else
+        locked=true lockBtn.Text="Tap Target"
+    end
+end)
+uis.TouchTap:Connect(function(posList)
+    if locked and not target then
+        local tgt = getTargetFromTouch(posList[1])
+        if tgt and tgt:FindFirstChild("HumanoidRootPart") then
+            target = tgt
+            indicator = createIndicator(tgt.HumanoidRootPart)
+            lockBtn.Text="Lock ON"
+        end
+    end
+end)
+runService.RenderStepped:Connect(function()
+    if locked and target and target:FindFirstChild("HumanoidRootPart") then
+        camera.CFrame = CFrame.new(camera.CFrame.Position, target.HumanoidRootPart.Position)
+        if target:FindFirstChild("Humanoid") and target.Humanoid.Health<=0 then
+            removeIndicator() lockBtn.Text="Tap Target" target=nil
+        end
+    elseif locked and target==nil then
+        lockBtn.Text="Tap Target"
+    end
+end)
